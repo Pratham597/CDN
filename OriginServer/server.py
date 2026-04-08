@@ -34,7 +34,7 @@ def get_file(filename):
         return "File not found", 404
 
     # Simulate slow backbone
-    time.sleep(2)
+    time.sleep(10)
 
     response = send_from_directory(CONTENT_DIR, filename)
     response.headers["X-Version"] = version
