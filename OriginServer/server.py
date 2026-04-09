@@ -3,6 +3,8 @@ import os
 import time
 import requests
 from datetime import datetime
+from dotenv import load_dotenv
+load_dotenv()
 
 app = Flask(__name__)
 
@@ -33,13 +35,13 @@ def get_file(filename):
     if not os.path.exists(file_path):
         return "File not found", 404
 
-    # Simulate slow backbone
+    # Simulate slow backbone (reduced to 2s to not trigger frontend 5s abort timeout)
     time.sleep(2)
 
     response = send_from_directory(CONTENT_DIR, filename)
     response.headers["X-Version"] = version
     response.headers["X-Origin"] = "true"
-
+    response.headers["Access-Control-Allow-Origin"] = "*"
     return response
 
 
@@ -100,10 +102,17 @@ def upload_file(filename):
 # -------------------------------
 @app.route("/metrics", methods=["GET"])
 def metrics():
-    return jsonify({
-        "total_files": len(file_metadata),
-        "files": file_metadata
+    # Count actual files on disk — accurate even after restart
+    try:
+        disk_files = os.listdir(CONTENT_DIR)
+    except Exception:
+        disk_files = []
+    response = jsonify({
+        "total_files": len(disk_files),
+        "files": {f: file_metadata.get(f, {"note": "pre-existing"}) for f in disk_files}
     })
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    return response
 
 
 # -------------------------------
@@ -118,4 +127,4 @@ def health():
 # RUN SERVER
 # -------------------------------
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)

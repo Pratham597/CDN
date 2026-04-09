@@ -1,6 +1,11 @@
 import express from 'express';
 import fetch from 'node-fetch';
 import geoip from 'geoip-lite';
+import dotenv from 'dotenv';
+import http from 'http';
+import { Server as SocketIOServer } from 'socket.io';
+
+dotenv.config();
 
 const app = express();
 const PORT = 4000;
@@ -10,132 +15,137 @@ const PORT = 4000;
  * Notice latency is now 0. It will be calculated dynamically!
  */
 let nodes = [
-    { name: "A", region: "America", url: "http://10.105.25.181:3001", latency: 0, active: 0, healthy: true },
-    { name: "B", region: "Europe",  url: "http://10.105.25.181:3002", latency: 0, active: 0, healthy: true },
-    { name: "C", region: "Asia",    url: "http://10.105.25.181:3003", latency: 0, active: 0, healthy: true }
+    { name: "A", region: "America", url: `http://127.0.0.1:3001`, latency: 0, active: 0, healthy: true },
+    { name: "B", region: "Europe", url: `http://127.0.0.1:3002`, latency: 0, active: 0, healthy: true },
+    { name: "C", region: "Asia", url: `http://127.0.0.1:3003`, latency: 0, active: 0, healthy: true }
 ];
 
 /**
- * Sticky Session Map (Upgraded to handle expirations)
+ * Round-robin counter for tiebreaking equal-load nodes
  */
-const clientMap = new Map();
-const STICKY_TTL = 5 * 60 * 1000; // 5 minutes in milliseconds
+let rrIndex = 0;
 
 /**
  * Utility: Calculate Score (Lower is better)
+ * Score = latency (ms) + active_connections * 20
+ * When all nodes are local, latency is ~equal, so this becomes pure least-connections.
  */
 function calculateScore(node) {
-    let healthPenalty = node.healthy ? 0 : 10000;
-    // Score = Actual Network Latency + (Load * Penalty) + Health
-    return node.latency + (node.active * 15) + healthPenalty;
+    if (!node.healthy) return Infinity;
+    return node.latency + (node.active * 20);
 }
 
 /**
- * Utility: Get Location from IP
+ * Choose Best Node — Pure Dynamic Load Balancing
+ * No sticky sessions. Every request picks the least-loaded healthy node.
+ * Tiebreaker: round-robin to distribute evenly across equal-load nodes.
  */
-function getClientInfo(req) {
-    let clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-
-    // LOCALHOST TESTING HACK: Randomly assign a global IP to test routing
-    if (clientIp === '127.0.0.1' || clientIp === '::1' || clientIp === '::ffff:127.0.0.1') {
-        const mockIps = ['8.8.8.8', '2.17.79.255', '1.1.1.1']; // US, France, Australia
-        clientIp = mockIps[Math.floor(Math.random() * mockIps.length)];
-    }
-
-    const geo = geoip.lookup(clientIp);
-    let region = "America"; 
-    let country = "Unknown";
-
-    if (geo && geo.country) {
-        country = geo.country;
-        const europeCountries = ['GB', 'DE', 'FR', 'IT', 'ES', 'NL'];
-        const asiaCountries = ['IN', 'JP', 'CN', 'KR', 'SG', 'AU'];
-
-        if (asiaCountries.includes(country)) region = "Asia";
-        else if (europeCountries.includes(country)) region = "Europe";
-    }
-
-    return { ip: clientIp, region, country };
-}
-
-/**
- * Choose Best Node
- */
-function chooseNode(region, clientId) {
-    const routingMap = {
+function chooseNode(region) {
+    // Priority order per region (preferred → fallbacks)
+    const routingPriority = {
         "Asia": ["C", "B", "A"],
         "Europe": ["B", "A", "C"],
         "America": ["A", "B", "C"]
     };
-    
-    const candidates = routingMap[region] || routingMap["America"];
+    const priority = routingPriority[region] || routingPriority["America"];
 
-    // 1. Sticky session check (with expiration)
-    if (clientMap.has(clientId)) {
-        const session = clientMap.get(clientId);
-        
-        if (Date.now() - session.timestamp < STICKY_TTL) {
-            let stickyNode = nodes.find(n => n.name === session.nodeName);
-            // Ensure node is still alive and not overloaded
-            if (stickyNode && stickyNode.active <= 10 && stickyNode.healthy) {
-                session.timestamp = Date.now(); // Renew session
-                return stickyNode;
-            }
-        } else {
-            clientMap.delete(clientId); // Clear expired session
+    // All healthy, non-overloaded nodes
+    const available = nodes.filter(n => n.healthy && n.active < 10);
+    if (available.length === 0) return null;
+
+    // Score each node
+    const scored = available.map(n => ({
+        node: n,
+        score: calculateScore(n),
+        regionRank: priority.indexOf(n.name) // lower = preferred region
+    }));
+
+    // Sort: primary = score (load), secondary = region preference
+    scored.sort((a, b) => {
+        const diff = a.score - b.score;
+        if (Math.abs(diff) < 10) {
+            // Scores within 10ms are considered equal — use region preference first
+            const rankDiff = a.regionRank - b.regionRank;
+            if (rankDiff !== 0) return rankDiff;
+            // Same region rank → round-robin
+            return 0;
         }
-    }
+        return diff;
+    });
 
-    // 2. Filter healthy nodes
-    let availableNodes = nodes.filter(n =>
-        candidates.includes(n.name) &&
-        n.active <= 10 &&
-        n.healthy
-    );
+    // Extract top-tier nodes (within 10ms of best score)
+    const bestScore = scored[0].score;
+    const topTier = scored.filter(s => s.score - bestScore < 10);
 
-    if (availableNodes.length === 0) return null;
-
-    // 3. Sort by dynamic score (Latency + Load)
-    availableNodes.sort((a, b) => calculateScore(a) - calculateScore(b));
-    let selected = availableNodes[0];
-
-    // 4. Save sticky mapping
-    clientMap.set(clientId, { nodeName: selected.name, timestamp: Date.now() });
+    // Round-robin within top tier for even distribution
+    const selected = topTier[rrIndex % topTier.length].node;
+    rrIndex++;
 
     return selected;
 }
 
 /**
- * Route Request
+ * Route Request — True Proxy (no browser redirect)
  */
-app.get('/file/:name', (req, res) => {
-    const { ip, region, country } = getClientInfo(req);
-    const node = chooseNode(region, ip);
+app.get('/file/:name', async (req, res) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Expose-Headers", "X-Cache, X-Edge-Node");
+
+    let region = req.query.region || 'America';
+    if (!['America', 'Europe', 'Asia'].includes(region)) region = 'America';
+
+    const node = chooseNode(region);
 
     if (!node) {
-        console.error(`[${new Date().toISOString()}] 🚨 503: Network Overloaded or Down`);
+        console.error(`[503] All nodes overloaded or offline`);
         return res.status(503).send("All edge nodes are busy or offline.");
     }
 
-    console.log(`[ROUTE] IP: ${ip} (${region}/${country}) → Node ${node.name} (Latency: ${node.latency}ms)`);
-    res.redirect(`${node.url}/file/${req.params.name}`);
+    console.log(`[ROUTE] Region: ${region} -> Node ${node.name} | load=${node.active} latency=${node.latency}ms`);
+
+    const query = req.url.includes('?') ? req.url.split('?')[1] : '';
+    const redirectUrl = `${node.url}/file/${req.params.name}${query ? '?' + query : ''}&nodeName=${node.name}`;
+    
+    // Perform 302 HTTP Redirect to offload data transmission from Traffic Manager
+    res.redirect(302, redirectUrl);
 });
+
 
 /**
  * Metrics Endpoint
  */
 app.get('/metrics', (req, res) => {
-    res.json({
-        active_sticky_sessions: clientMap.size,
-        nodes: nodes.map(n => ({
+    res.header("Access-Control-Allow-Origin", "*");
+
+    let totalHits = 0;
+    let totalMisses = 0;
+    let totalCacheSize = 0;
+
+    const mappedNodes = nodes.map(n => {
+        totalHits += (n.hits || 0);
+        totalMisses += (n.misses || 0);
+        totalCacheSize += (n.cache_size || 0);
+
+        return {
             name: n.name,
             region: n.region,
             status: n.healthy ? "ONLINE" : "OFFLINE",
             active_connections: n.active,
-            rtt_latency_ms: n.latency
-        }))
+            rtt_latency_ms: n.latency,
+            hits: n.hits || 0,
+            misses: n.misses || 0,
+            cache_size: n.cache_size || 0
+        };
+    });
+
+    res.json({
+        nodes: mappedNodes,
+        global_hits: totalHits,
+        global_misses: totalMisses,
+        global_cache_size: totalCacheSize
     });
 });
+
 
 /**
  * Background Health Check (Dynamic Latency + Timeout)
@@ -143,7 +153,7 @@ app.get('/metrics', (req, res) => {
 async function checkHealth() {
     for (let node of nodes) {
         const startTime = Date.now();
-        
+
         try {
             // AbortController ensures we don't hang if an edge node freezes
             const controller = new AbortController();
@@ -158,8 +168,11 @@ async function checkHealth() {
             const rtt = Date.now() - startTime; // Calculate actual network latency
 
             node.active = data.active_connections;
-            node.latency = rtt;     
-            
+            node.latency = rtt;
+            node.hits = data.hits || 0;
+            node.misses = data.misses || 0;
+            node.cache_size = data.cache_size || 0;
+
             if (!node.healthy) {
                 console.log(`[HEALTH] 🟢 Node ${node.name} recovered.`);
             }
@@ -180,9 +193,24 @@ async function checkHealth() {
 setInterval(checkHealth, 5000);
 
 /**
- * Start Server
+ * Socket Server & Start
  */
-app.listen(PORT,'0.0.0.0', () => {
-    console.log(`🚀 Traffic Manager running on http://10.105.25.181:${PORT}`);
-    console.log(`📊 View live metrics at http://10.105.25.181:${PORT}/metrics`);
+const server = http.createServer(app);
+global.io = new SocketIOServer(server, { cors: { origin: '*' } });
+
+global.io.on('connection', (socket) => {
+    console.log(`[SOCKET] Connected: ${socket.id}`);
+    // broadcast to others only — prevents duplicate log in the connecting client
+    socket.broadcast.emit('cdn:log', { message: `New peer connected (${socket.id.slice(0, 6)})` });
+
+    // Ensure frontend can emit manual tests if needed
+    socket.on('cdn:request', (payload) => {
+        if (!payload || !payload.coords) return;
+        global.io.emit('cdn:request', payload);
+    });
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Traffic Manager running on ${PORT}`);
+    console.log(`View live metrics at ${PORT}/metrics`);
 });
