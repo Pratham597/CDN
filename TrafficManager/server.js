@@ -2,8 +2,11 @@ import express from 'express';
 import fetch from 'node-fetch';
 import geoip from 'geoip-lite';
 import dotenv from 'dotenv';
+<<<<<<< HEAD
 import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
+=======
+>>>>>>> 7b0beff43efd74fc67f56cba4cde9a4dec7ce574
 
 dotenv.config();
 
@@ -15,9 +18,15 @@ const PORT = 4000;
  * Notice latency is now 0. It will be calculated dynamically!
  */
 let nodes = [
+<<<<<<< HEAD
     { name: "A", region: "America", url: `http://127.0.0.1:3001`, latency: 0, active: 0, healthy: true },
     { name: "B", region: "Europe", url: `http://127.0.0.1:3002`, latency: 0, active: 0, healthy: true },
     { name: "C", region: "Asia", url: `http://127.0.0.1:3003`, latency: 0, active: 0, healthy: true }
+=======
+    { name: "A", region: "America", url: `${process.env.EDGE_URL_A}:3001`, latency: 0, active: 0, healthy: true },
+    { name: "B", region: "Europe",  url: `${process.env.EDGE_URL_B}:3002`, latency: 0, active: 0, healthy: true },
+    { name: "C", region: "Asia",    url: `${process.env.EDGE_URL_C}:3003`, latency: 0, active: 0, healthy: true }
+>>>>>>> 7b0beff43efd74fc67f56cba4cde9a4dec7ce574
 ];
 
 /**
@@ -40,9 +49,58 @@ function calculateScore(node) {
  * No sticky sessions. Every request picks the least-loaded healthy node.
  * Tiebreaker: round-robin to distribute evenly across equal-load nodes.
  */
+<<<<<<< HEAD
 function chooseNode(region) {
     // Priority order per region (preferred → fallbacks)
     const routingPriority = {
+=======
+
+function getClientInfo(req) {
+    let clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+
+    // Handle multiple IPs (take first one)
+    if (clientIp && clientIp.includes(',')) {
+        clientIp = clientIp.split(',')[0].trim();
+    }
+
+    // Convert IPv6 to IPv4
+    if (clientIp && clientIp.startsWith('::ffff:')) {
+        clientIp = clientIp.replace('::ffff:', '');
+    }
+
+    console.log("IP:", clientIp);
+
+    // LOCALHOST TESTING HACK
+    if (!clientIp || clientIp === '127.0.0.1' || clientIp === '::1') {
+        const mockIps = ['8.8.8.8', '2.17.79.255', '1.1.1.1'];
+        clientIp = mockIps[Math.floor(Math.random() * mockIps.length)];
+    }
+
+    const geo = geoip.lookup(clientIp);
+    console.log("Geo:", geo);
+
+    let region = "America";
+    let country = "Unknown";
+
+    if (geo && geo.country) {
+        country = geo.country;
+
+        const europeCountries = ['GB', 'DE', 'FR', 'IT', 'ES', 'NL'];
+        const asiaCountries = ['IN', 'JP', 'CN', 'KR', 'SG']; 
+
+        if (asiaCountries.includes(country)) region = "Asia";
+        else if (europeCountries.includes(country)) region = "Europe";
+    }
+
+    return { ip: clientIp, region, country };
+}
+
+/**
+ * Choose Best Node
+ */
+function chooseNode(region, clientId) {
+    const routingMap = {
+>>>>>>> 7b0beff43efd74fc67f56cba4cde9a4dec7ce574
         "Asia": ["C", "B", "A"],
         "Europe": ["B", "A", "C"],
         "America": ["A", "B", "C"]
@@ -195,6 +253,7 @@ setInterval(checkHealth, 5000);
 /**
  * Socket Server & Start
  */
+<<<<<<< HEAD
 const server = http.createServer(app);
 global.io = new SocketIOServer(server, { cors: { origin: '*' } });
 
@@ -211,6 +270,9 @@ global.io.on('connection', (socket) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
+=======
+app.listen(PORT,() => {
+>>>>>>> 7b0beff43efd74fc67f56cba4cde9a4dec7ce574
     console.log(`Traffic Manager running on ${PORT}`);
     console.log(`View live metrics at ${PORT}/metrics`);
 });

@@ -10,6 +10,7 @@ import os
 load_dotenv()
 
 app = Flask(__name__)
+print(os.getenv("ORIGIN_URL"))
 
 # --- CONFIGURATION ---
 ORIGIN_URL = os.getenv("ORIGIN_URL")+":5000" 
@@ -88,6 +89,10 @@ def get_file(filename):
             with metrics_lock:
                 cache_hits += 1
 
+<<<<<<< HEAD
+=======
+            time.sleep(0.1)
+>>>>>>> 7b0beff43efd74fc67f56cba4cde9a4dec7ce574
             response = Response(cached_content)
             response.headers['X-Cache'] = 'HIT'
             response.headers['Access-Control-Allow-Origin'] = '*'

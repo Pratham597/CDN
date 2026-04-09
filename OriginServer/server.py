@@ -4,6 +4,10 @@ import time
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
+<<<<<<< HEAD
+=======
+import os
+>>>>>>> 7b0beff43efd74fc67f56cba4cde9a4dec7ce574
 load_dotenv()
 
 app = Flask(__name__)
@@ -12,9 +16,9 @@ CONTENT_DIR = "content"
 
 # Edge purge endpoints
 EDGE_NODES = [
-    "http://10.105.25.181:3001",
-    "http://10.105.25.181:3002",
-    "http://10.105.25.181:3003"
+    f"{os.getenv("EDGE_URL_A")}:3001",
+    f"{os.getenv("EDGE_URL_B")}:3002",
+    f"{os.getenv("EDGE_URL_C")}:3003"
 ]
 
 os.makedirs(CONTENT_DIR, exist_ok=True)
@@ -35,8 +39,13 @@ def get_file(filename):
     if not os.path.exists(file_path):
         return "File not found", 404
 
+<<<<<<< HEAD
     # Simulate slow backbone (reduced to 2s to not trigger frontend 5s abort timeout)
     time.sleep(2)
+=======
+    # Simulate slow backbone
+    time.sleep(10)
+>>>>>>> 7b0beff43efd74fc67f56cba4cde9a4dec7ce574
 
     response = send_from_directory(CONTENT_DIR, filename)
     response.headers["X-Version"] = version
